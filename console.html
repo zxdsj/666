@@ -331,6 +331,45 @@
       margin-top: 5px;
     }
 
+    .connection-status {
+      display: inline-block;
+      padding: 5px 12px;
+      border-radius: 15px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-left: 10px;
+      transition: all 0.3s ease;
+    }
+
+    .connection-status.connected {
+      background: #4caf50;
+      color: white;
+    }
+
+    .connection-status.connecting {
+      background: #ff9800;
+      color: white;
+    }
+
+    .connection-status.disconnected {
+      background: #f44336;
+      color: white;
+    }
+
+    #reconnect-btn {
+      display: none;
+      padding: 8px 16px;
+      margin-left: 10px;
+      background: #2196f3;
+      color: white;
+      font-size: 12px;
+    }
+
+    #reconnect-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(33, 150, 243, 0.4);
+    }
+
     .thinking-indicator {
       display: flex;
       gap: 5px;
@@ -382,6 +421,8 @@
   <div class="container">
     <div class="chat-header">
       Windows-MCP 对话助手
+      <span id="connection-status" class="connection-status disconnected">● 未连接</span>
+      <button id="reconnect-btn" onclick="reconnect()">重新连接</button>
     </div>
 
     <div id="chat-container"></div>
@@ -427,7 +468,14 @@
     // Windows-MCP 需要以 SSE 模式启动: uv run main.py --transport sse --host localhost --port 8000
     const MCP_BASE_URL = 'http://localhost:8000';
     const MCP_SSE_ENDPOINT = `${MCP_BASE_URL}/sse`;
-    const MCP_MESSAGE_ENDPOINT = `${MCP_BASE_URL}/message`;
+    const MCP_MESSAGE_ENDPOINT = `${MCP_BASE_URL}/messages`;
+    
+    // 连接状态管理
+    let sseConnection = null;
+    let isConnected = false;
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 5;
+    const RECONNECT_DELAY = 3000;
 
     const encouragingMessages = [
       '加油哦！💖',
@@ -487,59 +535,126 @@
     let mcpSessionId = null;
     let requestIdCounter = 0;
 
-    // 初始化 MCP 连接
-    async function initializeMCPSession() {
+    // 初始化 SSE 连接
+    function initializeSSEConnection() {
+      if (sseConnection) {
+        sseConnection.close();
+      }
+
+      updateConnectionStatus('connecting');
+      
       try {
-        // 发送初始化请求以建立 MCP 会话
-        const initRequest = {
-          jsonrpc: '2.0',
-          id: ++requestIdCounter,
-          method: 'initialize',
-          params: {
-            protocolVersion: '2024-11-05',
-            capabilities: {},
-            clientInfo: {
-              name: 'windows-mcp-console',
-              version: '1.0.0'
-            }
+        // 建立 SSE 连接（GET 请求到 /sse 端点）
+        sseConnection = new EventSource(MCP_SSE_ENDPOINT);
+        
+        // SSE 连接打开事件
+        sseConnection.onopen = () => {
+          console.log('SSE 连接已建立');
+          isConnected = true;
+          reconnectAttempts = 0;
+          updateConnectionStatus('connected');
+          showBubbleMessage('MCP 连接成功！💫');
+          
+          // 发送初始化请求
+          sendInitializeRequest();
+        };
+        
+        // 接收服务器消息
+        sseConnection.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            handleMCPResponse(data);
+          } catch (error) {
+            console.error('解析 SSE 消息失败:', error);
           }
         };
-
+        
+        // SSE 连接错误事件
+        sseConnection.onerror = (error) => {
+          console.error('SSE 连接错误:', error);
+          isConnected = false;
+          updateConnectionStatus('disconnected');
+          
+          // 自动重连
+          if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            reconnectAttempts++;
+            showBubbleMessage(`连接断开，${RECONNECT_DELAY/1000}秒后重连... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+            setTimeout(() => {
+              initializeSSEConnection();
+            }, RECONNECT_DELAY);
+          } else {
+            showBubbleMessage('连接失败次数过多，请手动重连');
+          }
+        };
+        
+      } catch (error) {
+        console.error('创建 SSE 连接失败:', error);
+        isConnected = false;
+        updateConnectionStatus('disconnected');
+      }
+    }
+    
+    // 发送初始化请求
+    async function sendInitializeRequest() {
+      const initRequest = {
+        jsonrpc: '2.0',
+        id: ++requestIdCounter,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: {
+            name: 'windows-mcp-console',
+            version: '1.0.0'
+          }
+        }
+      };
+      
+      await sendMCPMessage(initRequest);
+    }
+    
+    // 通过 POST 发送消息到服务器
+    async function sendMCPMessage(message) {
+      try {
         const response = await fetch(MCP_MESSAGE_ENDPOINT, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify(initRequest)
+          body: JSON.stringify(message)
         });
-
+        
         if (!response.ok) {
-          throw new Error(`初始化失败: HTTP ${response.status}`);
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
-
-        const data = await response.json();
-        if (data.error) {
-          throw new Error(`MCP 错误: ${data.error.message}`);
-        }
-
-        // 发送 initialized 通知
-        const initializedNotification = {
-          jsonrpc: '2.0',
-          method: 'notifications/initialized'
-        };
-
-        await fetch(MCP_MESSAGE_ENDPOINT, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(initializedNotification)
-        });
-
+        
+        // 注意：SSE 模式下，响应通过 EventSource 接收，不是在这里
         return true;
       } catch (error) {
-        console.error('MCP 初始化失败:', error);
-        return false;
+        console.error('发送消息失败:', error);
+        throw error;
+      }
+    }
+    
+    // 处理从 SSE 接收的 MCP 响应
+    function handleMCPResponse(data) {
+      console.log('收到 MCP 响应:', data);
+      
+      // 根据响应类型处理
+      if (data.method === 'notifications/initialized') {
+        // 初始化完成通知
+        addMessage('Windows-MCP 助手已就绪！输入 "help" 查看可用命令。', 'assistant');
+      } else if (data.result) {
+        // 工具调用结果
+        const resultText = data.result.content?.[0]?.text || 
+                          data.result.text || 
+                          JSON.stringify(data.result, null, 2);
+        removeThinkingIndicator();
+        addMessage(resultText, 'assistant');
+      } else if (data.error) {
+        // 错误响应
+        removeThinkingIndicator();
+        addMessage(`错误: ${data.error.message}`, 'assistant');
       }
     }
 
@@ -555,25 +670,8 @@
         }
       };
 
-      const response = await fetch(MCP_MESSAGE_ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(request)
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      
-      if (data.error) {
-        throw new Error(`MCP 错误: ${data.error.message}`);
-      }
-
-      return data.result;
+      await sendMCPMessage(request);
+      // 注意：响应将通过 SSE 连接异步接收
     }
 
     // 获取可用工具列表
@@ -584,20 +682,9 @@
         method: 'tools/list'
       };
 
-      const response = await fetch(MCP_MESSAGE_ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(request)
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      return data.result?.tools || [];
+      await sendMCPMessage(request);
+      // 注意：响应将通过 SSE 连接异步接收
+      // 这里需要改进：使用 Promise 等待响应
     }
 
     // 发送消息函数（修改为使用 MCP 协议）
@@ -619,35 +706,35 @@
       addThinkingIndicator();
 
       try {
+        if (!isConnected) {
+          throw new Error('未连接到 MCP 服务器，请点击重连按钮');
+        }
+        
         // 这里使用一个简单的方法：将用户消息作为 Powershell-Tool 命令
         // 实际应用中，您可能需要更复杂的逻辑来解析用户意图并调用相应的工具
         // 或者集成一个 LLM 来理解用户意图
         
-        // 示例：如果消息是命令，则执行 Powershell 工具
-        // 否则，返回友好的响应
-        let assistantMessage;
-        
         if (message.toLowerCase().startsWith('cmd:') || message.toLowerCase().startsWith('powershell:')) {
           // 执行 PowerShell 命令
           const command = message.substring(message.indexOf(':') + 1).trim();
-          const result = await callMCPTool('Powershell-Tool', { command });
-          assistantMessage = result.content?.[0]?.text || result.text || JSON.stringify(result);
+          await callMCPTool('Powershell-Tool', { command });
+          // 响应将通过 SSE 异步接收
         } else if (message.toLowerCase().startsWith('help') || message === '?') {
           // 列出可用工具
-          const tools = await listMCPTools();
-          assistantMessage = `可用的 Windows-MCP 工具：\n\n${tools.map(t => `• ${t.name}: ${t.description}`).join('\n\n')}`;
+          await listMCPTools();
+          // 响应将通过 SSE 异步接收
         } else {
-          // 默认响应
-          assistantMessage = `您好！我是 Windows-MCP 助手。\n\n您可以：\n• 输入 "help" 查看可用工具\n• 输入 "cmd: <命令>" 执行 PowerShell 命令\n• 输入 "powershell: <命令>" 执行 PowerShell 命令\n\n示例：\n• cmd: Get-Date\n• powershell: Get-Process | Select-Object -First 5\n\n注意：本界面是一个简化版本。完整的 Windows-MCP 功能需要通过支持 MCP 的 AI 客户端（如 Claude Desktop）使用。`;
+          // 默认响应（同步）
+          removeThinkingIndicator();
+          const assistantMessage = `您好！我是 Windows-MCP 助手。\n\n您可以：\n• 输入 "help" 查看可用工具\n• 输入 "cmd: <命令>" 执行 PowerShell 命令\n• 输入 "powershell: <命令>" 执行 PowerShell 命令\n\n示例：\n• cmd: Get-Date\n• powershell: Get-Process | Select-Object -First 5\n\n注意：本界面是一个简化版本。完整的 Windows-MCP 功能需要通过支持 MCP 的 AI 客户端（如 Claude Desktop）使用。`;
+          addMessage(assistantMessage, 'assistant');
+          conversationHistory.push({
+            role: 'assistant',
+            content: assistantMessage
+          });
+          isProcessing = false;
+          sendBtn.disabled = false;
         }
-        
-        removeThinkingIndicator();
-        addMessage(assistantMessage, 'assistant');
-        
-        conversationHistory.push({
-          role: 'assistant',
-          content: assistantMessage
-        });
 
       } catch (error) {
         removeThinkingIndicator();
@@ -659,7 +746,7 @@
         errorDiv.className = 'error-message';
         errorDiv.textContent = `错误详情: ${error.message}`;
         chatContainer.appendChild(errorDiv);
-      } finally {
+        
         isProcessing = false;
         sendBtn.disabled = false;
         messageInput.focus();
@@ -742,17 +829,44 @@
       if (bounceInterval) clearInterval(bounceInterval);
     });
 
-    // 页面加载时初始化 MCP 会话
-    (async () => {
-      const initialized = await initializeMCPSession();
-      if (initialized) {
-        showBubbleMessage('你好呀！我是泡泡~ MCP 连接成功！💫');
-        addMessage('Windows-MCP 助手已就绪！输入 "help" 查看可用命令。', 'assistant');
+    // 更新连接状态显示
+    function updateConnectionStatus(status) {
+      const statusIndicator = document.getElementById('connection-status');
+      const reconnectBtn = document.getElementById('reconnect-btn');
+      
+      statusIndicator.className = `connection-status ${status}`;
+      
+      if (status === 'connected') {
+        statusIndicator.textContent = '● 已连接';
+        reconnectBtn.style.display = 'none';
+      } else if (status === 'connecting') {
+        statusIndicator.textContent = '● 连接中...';
+        reconnectBtn.style.display = 'none';
       } else {
-        showBubbleMessage('MCP 连接失败，请检查服务器状态');
-        addMessage('⚠️ 无法连接到 Windows-MCP 服务器。\n\n请确保服务器正在运行：\nuv run main.py --transport sse --host localhost --port 8000', 'assistant');
+        statusIndicator.textContent = '● 未连接';
+        reconnectBtn.style.display = 'inline-block';
       }
-    })();
+    }
+    
+    // 手动重连
+    function reconnect() {
+      reconnectAttempts = 0;
+      initializeSSEConnection();
+    }
+    
+    // 页面加载时初始化 SSE 连接
+    window.addEventListener('DOMContentLoaded', () => {
+      initializeSSEConnection();
+    });
+    
+    // 页面卸载时关闭 SSE 连接
+    window.addEventListener('beforeunload', () => {
+      if (sseConnection) {
+        sseConnection.close();
+      }
+      clearInterval(idleCheckInterval);
+      if (bounceInterval) clearInterval(bounceInterval);
+    });
   </script>
 </body>
 </html>
