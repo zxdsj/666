@@ -15,6 +15,7 @@ import argparse
 from pathlib import Path
 from aiohttp import web, ClientSession, ClientTimeout, TCPConnector
 from aiohttp.web import Request, Response, StreamResponse
+from aiohttp.client_exceptions import ClientConnectionResetError
 import logging
 
 logging.basicConfig(
@@ -96,10 +97,17 @@ async def proxy_sse(request: Request) -> StreamResponse:
                     
                     async for data in backend_resp.content.iter_any():
                         if data:
-                            await response.write(data)
+                            try:
+                                await response.write(data)
+                            except ClientConnectionResetError:
+                                logger.info('客户端连接已关闭，停止 SSE 转发')
+                                return response
                     
         except asyncio.CancelledError:
             logger.info('SSE 连接被取消')
+            break
+        except ClientConnectionResetError:
+            logger.info('客户端连接已关闭')
             break
         except Exception as e:
             retry_count += 1
@@ -108,12 +116,19 @@ async def proxy_sse(request: Request) -> StreamResponse:
             if retry_count < MAX_RETRIES:
                 logger.info(f'将在 {RETRY_DELAY} 秒后重试...')
                 error_msg = f'data: {{"error": "连接失败，{RETRY_DELAY}秒后重试 ({retry_count}/{MAX_RETRIES})"}}\n\n'
-                await response.write(error_msg.encode('utf-8'))
+                try:
+                    await response.write(error_msg.encode('utf-8'))
+                except ClientConnectionResetError:
+                    logger.info('无法发送错误消息，客户端已断开')
+                    break
                 await asyncio.sleep(RETRY_DELAY)
             else:
                 logger.error('达到最大重试次数，停止重试')
                 error_msg = f'data: {{"error": "连接失败，已达到最大重试次数 ({MAX_RETRIES})"}}\n\n'
-                await response.write(error_msg.encode('utf-8'))
+                try:
+                    await response.write(error_msg.encode('utf-8'))
+                except ClientConnectionResetError:
+                    logger.info('无法发送错误消息，客户端已断开')
                 break
     
     return response
