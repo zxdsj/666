@@ -423,7 +423,11 @@
     let idleCheckInterval;
     let bounceInterval;
 
-    const API_ENDPOINT = 'http://localhost:8000/messages';
+    // MCP 服务器配置
+    // Windows-MCP 需要以 SSE 模式启动: uv run main.py --transport sse --host localhost --port 8000
+    const MCP_BASE_URL = 'http://localhost:8000';
+    const MCP_SSE_ENDPOINT = `${MCP_BASE_URL}/sse`;
+    const MCP_MESSAGE_ENDPOINT = `${MCP_BASE_URL}/message`;
 
     const encouragingMessages = [
       '加油哦！💖',
@@ -479,6 +483,124 @@
       }
     }
 
+    // MCP 会话管理
+    let mcpSessionId = null;
+    let requestIdCounter = 0;
+
+    // 初始化 MCP 连接
+    async function initializeMCPSession() {
+      try {
+        // 发送初始化请求以建立 MCP 会话
+        const initRequest = {
+          jsonrpc: '2.0',
+          id: ++requestIdCounter,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: {
+              name: 'windows-mcp-console',
+              version: '1.0.0'
+            }
+          }
+        };
+
+        const response = await fetch(MCP_MESSAGE_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(initRequest)
+        });
+
+        if (!response.ok) {
+          throw new Error(`初始化失败: HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (data.error) {
+          throw new Error(`MCP 错误: ${data.error.message}`);
+        }
+
+        // 发送 initialized 通知
+        const initializedNotification = {
+          jsonrpc: '2.0',
+          method: 'notifications/initialized'
+        };
+
+        await fetch(MCP_MESSAGE_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(initializedNotification)
+        });
+
+        return true;
+      } catch (error) {
+        console.error('MCP 初始化失败:', error);
+        return false;
+      }
+    }
+
+    // 使用 MCP 协议调用工具
+    async function callMCPTool(toolName, toolArgs) {
+      const request = {
+        jsonrpc: '2.0',
+        id: ++requestIdCounter,
+        method: 'tools/call',
+        params: {
+          name: toolName,
+          arguments: toolArgs
+        }
+      };
+
+      const response = await fetch(MCP_MESSAGE_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(request)
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.error) {
+        throw new Error(`MCP 错误: ${data.error.message}`);
+      }
+
+      return data.result;
+    }
+
+    // 获取可用工具列表
+    async function listMCPTools() {
+      const request = {
+        jsonrpc: '2.0',
+        id: ++requestIdCounter,
+        method: 'tools/list'
+      };
+
+      const response = await fetch(MCP_MESSAGE_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(request)
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.result?.tools || [];
+    }
+
+    // 发送消息函数（修改为使用 MCP 协议）
     async function sendMessage() {
       const message = messageInput.value.trim();
       if (!message || isProcessing) return;
@@ -497,25 +619,29 @@
       addThinkingIndicator();
 
       try {
-        const response = await fetch(API_ENDPOINT, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            messages: conversationHistory
-          })
-        });
-
-        removeThinkingIndicator();
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        const assistantMessage = data.choices?.[0]?.message?.content || data.response || '抱歉，我没有收到回复。';
+        // 这里使用一个简单的方法：将用户消息作为 Powershell-Tool 命令
+        // 实际应用中，您可能需要更复杂的逻辑来解析用户意图并调用相应的工具
+        // 或者集成一个 LLM 来理解用户意图
         
+        // 示例：如果消息是命令，则执行 Powershell 工具
+        // 否则，返回友好的响应
+        let assistantMessage;
+        
+        if (message.toLowerCase().startsWith('cmd:') || message.toLowerCase().startsWith('powershell:')) {
+          // 执行 PowerShell 命令
+          const command = message.substring(message.indexOf(':') + 1).trim();
+          const result = await callMCPTool('Powershell-Tool', { command });
+          assistantMessage = result.content?.[0]?.text || result.text || JSON.stringify(result);
+        } else if (message.toLowerCase().startsWith('help') || message === '?') {
+          // 列出可用工具
+          const tools = await listMCPTools();
+          assistantMessage = `可用的 Windows-MCP 工具：\n\n${tools.map(t => `• ${t.name}: ${t.description}`).join('\n\n')}`;
+        } else {
+          // 默认响应
+          assistantMessage = `您好！我是 Windows-MCP 助手。\n\n您可以：\n• 输入 "help" 查看可用工具\n• 输入 "cmd: <命令>" 执行 PowerShell 命令\n• 输入 "powershell: <命令>" 执行 PowerShell 命令\n\n示例：\n• cmd: Get-Date\n• powershell: Get-Process | Select-Object -First 5\n\n注意：本界面是一个简化版本。完整的 Windows-MCP 功能需要通过支持 MCP 的 AI 客户端（如 Claude Desktop）使用。`;
+        }
+        
+        removeThinkingIndicator();
         addMessage(assistantMessage, 'assistant');
         
         conversationHistory.push({
@@ -526,7 +652,7 @@
       } catch (error) {
         removeThinkingIndicator();
         console.error('Error:', error);
-        const errorMessage = '抱歉，连接 Windows-MCP API 时出现错误。请确保服务器正在运行（localhost:8000）。';
+        const errorMessage = '抱歉，连接 Windows-MCP 服务器时出现错误。\n\n请确保：\n1. 服务器正在运行\n2. 使用 SSE 模式启动：uv run main.py --transport sse --host localhost --port 8000\n3. 服务器地址为 localhost:8000';
         addMessage(errorMessage, 'assistant');
         
         const errorDiv = document.createElement('div');
@@ -616,7 +742,17 @@
       if (bounceInterval) clearInterval(bounceInterval);
     });
 
-    showBubbleMessage('你好呀！我是泡泡~ 有什么可以帮你的吗？💫');
+    // 页面加载时初始化 MCP 会话
+    (async () => {
+      const initialized = await initializeMCPSession();
+      if (initialized) {
+        showBubbleMessage('你好呀！我是泡泡~ MCP 连接成功！💫');
+        addMessage('Windows-MCP 助手已就绪！输入 "help" 查看可用命令。', 'assistant');
+      } else {
+        showBubbleMessage('MCP 连接失败，请检查服务器状态');
+        addMessage('⚠️ 无法连接到 Windows-MCP 服务器。\n\n请确保服务器正在运行：\nuv run main.py --transport sse --host localhost --port 8000', 'assistant');
+      }
+    })();
   </script>
 </body>
 </html>
