@@ -34,9 +34,32 @@
 
 #### Installation & Usage
 
+##### Method 1: Using console.py Proxy Server (Recommended - Solves CORS Issues)
+
 1. **Start the Windows-MCP Server**:
     ```bash
-    # Navigate to the Windows-MCP directory
+    uv run main.py --transport sse --host localhost --port 8000
+    ```
+
+2. **Start the Proxy Server**:
+    ```bash
+    python console.py
+    # Or with custom port:
+    python console.py --port 18989
+    ```
+
+3. **Access the Web Console**:
+    - Open your browser and visit: `http://localhost:18989/console`
+    - The proxy server automatically:
+      - Serves the console.html interface
+      - Forwards requests to the MCP server (http://localhost:8000)
+      - Handles CORS issues
+      - Implements auto-retry (3 attempts, 10s intervals)
+
+##### Method 2: Direct Access (May Have CORS Issues)
+
+1. **Start the Windows-MCP Server**:
+    ```bash
     uv run main.py --transport sse --host localhost --port 8000
     ```
 
@@ -44,7 +67,6 @@
     - Simply open `console.html` in your web browser
     - Or serve it using a local web server:
         ```bash
-        # Using Python
         python -m http.server 8080
         # Then visit http://localhost:8080/console.html
         ```
@@ -103,13 +125,21 @@ The console is built with vanilla HTML, CSS, and JavaScript, making it easy to c
 
 ### 🔧 Troubleshooting
 
-**Problem**: "无法连接 Windows-MCP API 服务器"
+**Problem**: "无法连接 Windows-MCP API 服务器" or CORS Errors
 
 **Solutions**:
+- **Recommended**: Use `console.py` proxy server to avoid CORS issues
+  ```bash
+  python console.py
+  # Then visit http://localhost:18989/console
+  ```
 - Ensure Windows-MCP server is running on `localhost:8000`
-- Check that the server is started with SSE or HTTP transport
-- Verify CORS settings if serving from different origin
-- Check browser console for detailed error messages
+- Check that the server is started with SSE transport:
+  ```bash
+  uv run main.py --transport sse --host localhost --port 8000
+  ```
+- The proxy server will automatically retry failed connections (3 times, 10s intervals)
+- Check browser console and proxy server logs for detailed error messages
 
 ### 📄 License
 
@@ -147,9 +177,32 @@ This project follows the same license as Windows-MCP (MIT License).
 
 #### 安装和使用
 
+##### 方法一: 使用 console.py 代理服务器 (推荐 - 解决 CORS 问题)
+
 1. **启动 Windows-MCP 服务器**:
     ```bash
-    # 导航到 Windows-MCP 的目录
+    uv run main.py --transport sse --host localhost --port 8000
+    ```
+
+2. **启动代理服务器**:
+    ```bash
+    python console.py
+    # 或使用自定义端口:
+    python console.py --port 18989
+    ```
+
+3. **访问网页控制台**:
+    - 打开浏览器访问: `http://localhost:18989/console`
+    - 代理服务器会自动:
+      - 提供 console.html 界面
+      - 转发请求到 MCP 服务器 (http://localhost:8000)
+      - 处理 CORS 跨域问题
+      - 实现自动重试 (3次尝试,间隔10秒)
+
+##### 方法二: 直接访问 (可能存在 CORS 问题)
+
+1. **启动 Windows-MCP 服务器**:
+    ```bash
     uv run main.py --transport sse --host localhost --port 8000
     ```
 
@@ -157,7 +210,6 @@ This project follows the same license as Windows-MCP (MIT License).
     - 直接在浏览器中打开 `console.html`
     - 或使用本地 Web 服务器:
         ```bash
-        # 使用 Python
         python -m http.server 8080
         # 然后访问 http://localhost:8080/console.html
         ```
@@ -216,13 +268,21 @@ const API_ENDPOINT = 'http://localhost:8000/messages';
 
 ### 🔧 故障排除
 
-**问题**: "无法连接 Windows-MCP API 服务器"
+**问题**: "无法连接 Windows-MCP API 服务器" 或 CORS 跨域错误
 
 **解决方法**:
+- **推荐**: 使用 `console.py` 代理服务器避免 CORS 问题
+  ```bash
+  python console.py
+  # 然后访问 http://localhost:18989/console
+  ```
 - 确保 Windows-MCP 服务器在 `localhost:8000` 上运行
-- 检查服务器是否以 SSE 或 HTTP 传输方式启动
-- 如果从不同源服务，请验证 CORS 设置
-- 检查浏览器控制台中的详细错误消息
+- 检查服务器是否以 SSE 传输方式启动:
+  ```bash
+  uv run main.py --transport sse --host localhost --port 8000
+  ```
+- 代理服务器会自动重试失败的连接 (3次,间隔10秒)
+- 检查浏览器控制台和代理服务器日志中的详细错误消息
 
 ### 📄 许可证
 
